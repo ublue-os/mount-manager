@@ -791,6 +791,7 @@ def run_gui() -> int:
             self.path_entry = Gtk.Entry()
             self.path_entry.set_placeholder_text("//hostname/share")
             self.path_entry.set_hexpand(True)
+            self.path_entry.connect("activate", lambda _entry: self.on_next_clicked())
             self.path_box.append(self.path_entry)
 
             path_help = Gtk.Label(label="Example: //192.168.1.2/sharename or //hostname/sharename")
@@ -814,6 +815,7 @@ def run_gui() -> int:
 
             self.user_entry = Gtk.Entry()
             self.user_entry.set_hexpand(True)
+            self.user_entry.connect("activate", lambda _entry: self.password_entry.grab_focus())
             self.credentials_box.attach(self.user_entry, 1, 1, 1, 1)
 
             password_label = Gtk.Label(label="Password")
@@ -822,6 +824,7 @@ def run_gui() -> int:
 
             self.password_entry = Gtk.PasswordEntry()
             self.password_entry.set_hexpand(True)
+            self.password_entry.connect("activate", lambda _entry: self.on_next_clicked())
             self.credentials_box.attach(self.password_entry, 1, 2, 1, 1)
 
             self.status_label = Gtk.Label()
@@ -883,7 +886,7 @@ def run_gui() -> int:
             if self.share_path is None:
                 self.check_host()
             else:
-                self.test_and_create()
+                self.create_share()
 
         def check_host(self) -> None:
             try:
@@ -897,7 +900,7 @@ def run_gui() -> int:
 
             self.show_credentials_step(share_path)
 
-        def test_and_create(self) -> None:
+        def create_share(self) -> None:
             if self.share_path is None:
                 self.set_status("Check the share path before entering credentials.", "error")
                 return
@@ -908,7 +911,7 @@ def run_gui() -> int:
 
             try:
                 validate_credentials(username, password)
-                self.set_status("Testing temporary mount, then creating startup mount...", "success")
+                self.set_status("Verifying the mount, then creating the startup mount...", "success")
                 request_helper_verified_create(share, username, password)
             except MountManagerError as exc:
                 self.set_status(str(exc), "error")
