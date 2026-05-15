@@ -581,7 +581,10 @@ def delete_mount(record: ManagedMount) -> None:
 
 def set_mount_enabled(record: ManagedMount, enabled: bool) -> None:
     if enabled:
-        run_command(["systemctl", "enable", "--now", record.unit_name])
+        try:
+            run_command(["systemctl", "enable", "--now", record.unit_name])
+        except CommandError as exc:
+            raise CommandError("Could not mount the share. Check the share path, username, and password.") from exc
         return
 
     run_command(["systemctl", "disable", "--now", record.unit_name])
@@ -974,11 +977,11 @@ def run_gui() -> int:
             self.credentials_box.set_visible(False)
             root.append(self.credentials_box)
 
-            verified_label = Gtk.Label(label="")
-            verified_label.set_xalign(0)
-            verified_label.add_css_class("success")
-            self.credentials_box.attach(verified_label, 0, 0, 2, 1)
-            self.verified_label = verified_label
+            host_status_label = Gtk.Label(label="")
+            host_status_label.set_xalign(0)
+            host_status_label.add_css_class("success")
+            self.credentials_box.attach(host_status_label, 0, 0, 2, 1)
+            self.host_status_label = host_status_label
 
             user_label = Gtk.Label(label="Username")
             user_label.set_xalign(0)
@@ -1047,7 +1050,7 @@ def run_gui() -> int:
             self.path_entry.set_sensitive(False)
             self.path_box.set_visible(True)
             self.credentials_box.set_visible(True)
-            self.verified_label.set_text("Host is reachable. Please enter credentials.")
+            self.host_status_label.set_text("Host is reachable. Please enter credentials.")
             self.back_button.set_visible(True)
             self.next_button.set_label("Create")
             self.status_label.set_visible(False)
