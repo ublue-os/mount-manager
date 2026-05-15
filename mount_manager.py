@@ -32,6 +32,10 @@ APP_NAME = "SMB Mount Manager"
 APP_ID = "io.github.ublue_os.mount-manager"
 COLOR_SCHEME_ENV = "MOUNT_MANAGER_COLOR_SCHEME"
 APP_ICON_NAME = APP_ID
+PROJECT_ROOT = Path(__file__).resolve().parent
+DESKTOP_FILE_PATH = PROJECT_ROOT / "data" / "applications" / f"{APP_ID}.desktop"
+ICON_FILE_PATH = PROJECT_ROOT / "data" / "icons" / "hicolor" / "scalable" / "apps" / f"{APP_ID}.svg"
+METAINFO_FILE_PATH = PROJECT_ROOT / "data" / "metainfo" / f"{APP_ID}.metainfo.xml"
 
 MANAGED_ROOT = Path("/etc/mount-manager")
 CREDENTIALS_DIR = MANAGED_ROOT / "credentials"
