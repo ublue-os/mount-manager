@@ -141,6 +141,16 @@ class ManagedMount:
     status: str = "Unknown"
 
 
+@dataclasses.dataclass(frozen=True)
+class DisplayedMount:
+    source: str
+    mount_point: Path
+    status: str
+    active: bool
+    managed: bool
+    managed_record: ManagedMount | None = None
+
+
 def parse_share_path(raw_value: str) -> SharePath:
     value = raw_value.strip()
     if not value:
@@ -603,6 +613,57 @@ def load_managed_mounts() -> list[ManagedMount]:
         if record is not None:
             records.append(record)
     return records
+
+
+def load_current_smb_mounts() -> list[DisplayedMount]:
+    result = run_command(["findmnt", "--json", "--types", "cifs,smb3"], check=False)
+    if result.returncode != 0:
+        return []
+    try:
+        payload = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError:
+        return []
+
+    mounts = []
+    for filesystem in payload.get("filesystems") or []:
+        source = str(filesystem.get("source") or "")
+        target = str(filesystem.get("target") or "")
+        fstype = str(filesystem.get("fstype") or "")
+        if not source or not target or fstype not in {"cifs", "smb3"}:
+            continue
+        mounts.append(
+            DisplayedMount(
+                source=source,
+                mount_point=Path(target),
+                status="Mounted",
+                active=True,
+                managed=False,
+            )
+        )
+    return mounts
+
+
+def load_displayed_mounts() -> list[DisplayedMount]:
+    managed_records = load_managed_mounts()
+    displayed = [
+        DisplayedMount(
+            source=record.source,
+            mount_point=record.mount_point,
+            status=record.status,
+            active=record.active,
+            managed=True,
+            managed_record=record,
+        )
+        for record in managed_records
+    ]
+
+    managed_keys = {(record.source, str(record.mount_point)) for record in managed_records}
+    for mount in load_current_smb_mounts():
+        if (mount.source, str(mount.mount_point)) in managed_keys:
+            continue
+        displayed.append(mount)
+
+    return displayed
 
 
 def detect_color_scheme(env: dict[str, str] | None = None) -> str:
@@ -1095,7 +1156,7 @@ def run_gui() -> int:
             root.set_margin_end(16)
             self.set_child(root)
 
-            self.empty_label = Gtk.Label(label="No managed SMB mounts yet.")
+            self.empty_label = Gtk.Label(label="No SMB mounts found.")
             self.empty_label.add_css_class("dim-label")
             self.empty_label.set_margin_top(32)
 
@@ -1119,14 +1180,14 @@ def run_gui() -> int:
                     break
                 self.list_box.remove(row)
 
-            records = load_managed_mounts()
-            self.empty_label.set_visible(not records)
-            self.list_box.set_visible(bool(records))
+            mounts = load_displayed_mounts()
+            self.empty_label.set_visible(not mounts)
+            self.list_box.set_visible(bool(mounts))
 
-            for record in records:
-                self.list_box.append(self.row_for(record))
+            for mount in mounts:
+                self.list_box.append(self.row_for(mount))
 
-        def row_for(self, record: ManagedMount) -> Gtk.ListBoxRow:
+        def row_for(self, mount: DisplayedMount) -> Gtk.ListBoxRow:
             row = Gtk.ListBoxRow()
             box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
             box.set_margin_top(10)
@@ -1136,19 +1197,26 @@ def run_gui() -> int:
 
             mount_switch = Gtk.Switch()
             mount_switch.set_valign(Gtk.Align.CENTER)
-            mount_switch.set_tooltip_text("Enable or disable this managed mount")
-            mount_switch.set_active(record.active)
-            mount_switch.connect("notify::active", lambda switch, _param: self.toggle_mount(record, switch))
+            mount_switch.set_active(mount.active)
+            mount_switch.set_sensitive(mount.managed)
+            if mount.managed and mount.managed_record is not None:
+                mount_switch.set_tooltip_text("Enable or disable this managed mount")
+                mount_switch.connect(
+                    "notify::active",
+                    lambda switch, _param: self.toggle_mount(mount.managed_record, switch),
+                )
+            else:
+                mount_switch.set_tooltip_text("This SMB mount is not managed by this app")
 
             text_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
             text_box.set_hexpand(True)
 
-            source_label = Gtk.Label(label=record.source)
+            source_label = Gtk.Label(label=mount.source)
             source_label.set_xalign(0)
             source_label.add_css_class("heading")
             source_label.set_ellipsize(Pango.EllipsizeMode.END)
 
-            detail = f"{record.mount_point}  -  {record.status}"
+            detail = f"{mount.mount_point}  -  {mount.status}"
             detail_label = Gtk.Label(label=detail)
             detail_label.set_xalign(0)
             detail_label.add_css_class("dim-label")
@@ -1157,19 +1225,27 @@ def run_gui() -> int:
             text_box.append(source_label)
             text_box.append(detail_label)
 
-            open_button = Gtk.Button.new_from_icon_name("folder-open-symbolic")
-            open_button.set_tooltip_text("Open mount folder")
-            open_button.connect("clicked", lambda _button: self.open_mount_folder(record))
-
-            delete_button = Gtk.Button.new_from_icon_name("user-trash-symbolic")
-            delete_button.set_tooltip_text("Delete mount")
-            delete_button.add_css_class("destructive-action")
-            delete_button.connect("clicked", lambda _button: self.confirm_delete(record))
-
             box.append(mount_switch)
             box.append(text_box)
-            box.append(open_button)
-            box.append(delete_button)
+
+            if mount.managed and mount.managed_record is not None:
+                open_button = Gtk.Button.new_from_icon_name("folder-open-symbolic")
+                open_button.set_tooltip_text("Open mount folder")
+                open_button.connect("clicked", lambda _button: self.open_mount_folder(mount.managed_record))
+
+                delete_button = Gtk.Button.new_from_icon_name("user-trash-symbolic")
+                delete_button.set_tooltip_text("Delete mount")
+                delete_button.add_css_class("destructive-action")
+                delete_button.connect("clicked", lambda _button: self.confirm_delete(mount.managed_record))
+
+                box.append(open_button)
+                box.append(delete_button)
+            else:
+                not_managed_label = Gtk.Label(label="Not managed")
+                not_managed_label.add_css_class("dim-label")
+                not_managed_label.set_valign(Gtk.Align.CENTER)
+                box.append(not_managed_label)
+
             row.set_child(box)
             return row
 
