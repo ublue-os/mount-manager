@@ -22,7 +22,6 @@ import shutil
 import socket
 import subprocess
 import sys
-import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -334,14 +333,6 @@ def ensure_runtime_directories() -> None:
     os.chmod(METADATA_DIR, 0o755)
 
 
-def write_credential_file(path: Path, username: str, password: str) -> None:
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        handle.write(f"username={username}\n")
-        handle.write(f"password={password}\n")
-    os.chmod(path, 0o600)
-
-
 def systemd_version() -> int | None:
     """Return the major version number of systemd, or None if it cannot be determined."""
     try:
@@ -386,7 +377,6 @@ def require_systemd_support() -> None:
         file=sys.stderr,
     )
     raise SystemExit(1)
-
 
 
 def write_encrypted_credential_file(path: Path, credential_name: str, username: str, password: str) -> None:
@@ -464,20 +454,18 @@ def check_smb_host_reachable(share_raw: str) -> SharePath:
             type=socket.SOCK_STREAM,
         )
     except socket.gaierror as exc:
-        raise CommandError(f"Could not resolve host {share_path.host}.") from exc
+        raise CommandError("Could not find the host. Check the share path and network connection.") from exc
 
-    last_error = "connection failed"
     for family, socktype, proto, _canonname, sockaddr in addresses:
         with socket.socket(family, socktype, proto) as sock:
             sock.settimeout(CONNECT_TIMEOUT_SECONDS)
             try:
                 sock.connect(sockaddr)
-            except OSError as exc:
-                last_error = str(exc)
+            except OSError:
                 continue
             return share_path
 
-    raise CommandError(f"Could not connect to {share_path.host} on SMB port {SMB_PORT}: {last_error}")
+    raise CommandError("Could not connect to the host. Check the share path and network connection.")
 
 
 def mount_options(
@@ -513,46 +501,13 @@ def create_mount(share_raw: str, username_raw: str, password_raw: str) -> None:
         write_text_file(unit_path, mount_unit_text(record), 0o644)
         write_metadata_file(record)
         run_command(["systemctl", "daemon-reload"])
-        run_command(["systemctl", "enable", "--now", record.unit_name])
+        try:
+            run_command(["systemctl", "enable", "--now", record.unit_name])
+        except CommandError as exc:
+            raise CommandError("Could not mount the share. Check the share path, username, and password.") from exc
     except Exception:
         rollback_failed_create(record)
         raise
-
-
-def test_mount_share(share_raw: str, username_raw: str, password_raw: str) -> None:
-    share_path = parse_share_path(share_raw)
-    username, password = validate_credentials(username_raw, password_raw)
-    creator_uid, creator_gid = original_user_ids()
-
-    with tempfile.TemporaryDirectory(prefix="mount-manager-test-", dir="/tmp") as tmpdir:
-        tmp_path = Path(tmpdir)
-        credential_path = tmp_path / "credentials"
-        mount_point = tmp_path / "mount"
-        mount_point.mkdir(mode=0o700)
-        write_credential_file(credential_path, username, password)
-
-        try:
-            run_command(
-                [
-                    "mount",
-                    "-t",
-                    "cifs",
-                    share_path.source,
-                    str(mount_point),
-                    "-o",
-                    mount_options(credential_path, creator_uid, creator_gid),
-                ]
-            )
-            if not is_mounted(mount_point):
-                raise CommandError("Temporary mount did not become active.")
-        finally:
-            if is_mounted(mount_point):
-                run_command(["umount", str(mount_point)], check=False)
-
-
-def create_verified_mount(share_raw: str, username_raw: str, password_raw: str) -> None:
-    test_mount_share(share_raw, username_raw, password_raw)
-    create_mount(share_raw, username_raw, password_raw)
 
 
 def remove_if_exists(path: Path) -> None:
@@ -851,11 +806,11 @@ def run_privileged_helper(action: str, payload: dict[str, Any]) -> dict[str, Any
     return response
 
 
-def request_helper_verified_create(share: str, username: str, password: str) -> None:
+def request_helper_create(share: str, username: str, password: str) -> None:
     parse_share_path(share)
     validate_credentials(username, password)
     run_privileged_helper(
-        "verify-create",
+        "create",
         {
             "share": share,
             "username": username,
@@ -902,8 +857,8 @@ def run_helper_mode(action: str) -> int:
 
     try:
         payload = read_helper_payload()
-        if action == "verify-create":
-            create_verified_mount(
+        if action == "create":
+            create_mount(
                 str(payload.get("share", "")),
                 str(payload.get("username", "")),
                 str(payload.get("password", "")),
@@ -1127,8 +1082,8 @@ def run_gui() -> int:
 
             try:
                 validate_credentials(username, password)
-                self.set_status("Verifying the mount, then creating the startup mount...", "success")
-                request_helper_verified_create(share, username, password)
+                self.set_status("Creating encrypted startup mount...", "success")
+                request_helper_create(share, username, password)
             except MountManagerError as exc:
                 self.set_status(str(exc), "error")
                 return
@@ -1360,7 +1315,10 @@ def run_gui() -> int:
 
             if mount.managed and mount.managed_record is not None:
                 open_button = Gtk.Button.new_from_icon_name("folder-open-symbolic")
-                open_button.set_tooltip_text("Open mount folder")
+                open_button.set_sensitive(mount.active)
+                open_button.set_tooltip_text(
+                    "Open mount folder" if mount.active else "Enable this mount to open its folder"
+                )
                 open_button.connect("clicked", lambda _button: self.open_mount_folder(mount.managed_record))
 
                 delete_button = Gtk.Button.new_from_icon_name("user-trash-symbolic")
@@ -1443,7 +1401,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=APP_NAME)
     parser.add_argument(
         "--helper",
-        choices=("delete", "set-enabled", "verify-create"),
+        choices=("create", "delete", "set-enabled"),
         help=argparse.SUPPRESS,
     )
     return parser.parse_args(argv)
